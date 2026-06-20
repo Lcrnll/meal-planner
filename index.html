@@ -87,7 +87,10 @@ body{font-family:'DM Sans',system-ui,sans-serif;background:var(--bg);color:var(-
   <div class="header-icon">🏺</div>
   <h1>Pénates</h1>
   <div style="flex:1"></div>
-  <button class="sync-btn" onclick="syncFromSheet()" title="Sync recettes">↻</button>
+  <button class="sync-btn" onclick="window.navigateWeek(-1)" title="Semaine précédente" style="padding:3px 7px;">‹</button>
+  <span id="week-offset-label" style="font-size:11px;color:var(--text-hint);min-width:16px;text-align:center;"></span>
+  <button class="sync-btn" onclick="window.navigateWeek(1)" title="Semaine suivante" style="padding:3px 7px;">›</button>
+  <button class="sync-btn" onclick="syncFromSheet()" title="Sync recettes" style="margin-left:4px;">↻</button>
   <div class="sync-status" id="sync-dot" title="Statut sync"></div>
   <span class="week-info" id="week-info" style="margin-left:6px;"></span>
 </div>
@@ -123,7 +126,6 @@ const firebaseConfig = {
 };
 const fbApp = initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
-const STATE_DOC = doc(db, 'penates', 'state');
 const CACHE_DOC = doc(db, 'penates', 'recipes_cache');
 
 // ── CONFIG SHEETS ─────────────────────────────────────────────────────
@@ -139,6 +141,28 @@ let currentFilter='all',currentTab='semaine';
 let checkedItems=new Set(),hiddenItems=new Set();
 let remoteWriteTimeout=null;
 let ignoreNextSnapshot=false;
+let weekOffset=0; // 0 = semaine en cours, -1 = semaine passée, +1 = semaine prochaine
+let currentUnsubscribe=null;
+
+// ── WEEK KEY (used as Firestore doc ID) ───────────────────────────────
+function getSaturdayKey(offset=0){
+  const n=new Date(),d=n.getDay();
+  const diffSat=d===6?0:d===0?-1:-(d+1);
+  const sat=new Date(n);
+  sat.setDate(n.getDate()+diffSat+(offset*7));
+  sat.setHours(0,0,0,0);
+  return sat.toISOString().slice(0,10); // e.g. "2025-06-21"
+}
+function getWeekLabel(offset=0){
+  const key=getSaturdayKey(offset);
+  const sat=new Date(key);
+  const fri=new Date(sat);fri.setDate(sat.getDate()+6);
+  const fmt=dt=>dt.toLocaleDateString('fr-FR',{day:'numeric',month:'short'});
+  return`${fmt(sat)} — ${fmt(fri)}`;
+}
+function stateDocForOffset(offset){
+  return doc(db,'penates','week_'+getSaturdayKey(offset));
+}
 
 // ── SYNC STATUS DOT ───────────────────────────────────────────────────
 function setSyncStatus(s){const d=document.getElementById('sync-dot');if(d){d.className='sync-status '+s;}}
@@ -166,7 +190,7 @@ function saveState(){
   remoteWriteTimeout=setTimeout(async()=>{
     try{
       ignoreNextSnapshot=true;
-      await setDoc(STATE_DOC,state);
+      await setDoc(stateDocForOffset(weekOffset),state);
       setSyncStatus('synced');
     }catch(e){setSyncStatus('error');console.error(e);}
   },600);
@@ -174,7 +198,8 @@ function saveState(){
 
 // Real-time listener — updates all open devices instantly
 function listenState(){
-  onSnapshot(STATE_DOC,(snap)=>{
+  if(currentUnsubscribe)currentUnsubscribe(); // stop previous listener
+  currentUnsubscribe=onSnapshot(stateDocForOffset(weekOffset),(snap)=>{
     if(ignoreNextSnapshot){ignoreNextSnapshot=false;return;}
     if(snap.exists()){
       applyRemoteState(snap.data());
@@ -231,21 +256,34 @@ function loadDishes(dishes){
 }
 
 // ── WEEK HELPERS ──────────────────────────────────────────────────────
-function getWeekLabel(){
-  const n=new Date(),d=n.getDay();
-  const diffSat=d===6?0:d===0?-1:-(d+1);
-  const sat=new Date(n);sat.setDate(n.getDate()+diffSat);
-  const fri=new Date(sat);fri.setDate(sat.getDate()+6);
-  const fmt=dt=>dt.toLocaleDateString('fr-FR',{day:'numeric',month:'short'});
-  return`${fmt(sat)} — ${fmt(fri)}`;
-}
 function shouldSuggest(){
-  const n=new Date(),d=n.getDay();
-  const diffSat=d===6?0:d===0?-1:-(d+1);
-  const sat=new Date(n);sat.setDate(n.getDate()+diffSat);sat.setHours(0,0,0,0);
+  if(weekOffset!==0)return false;
   if(!state.lastSuggest)return true;
   const ls=new Date(state.lastSuggest);ls.setHours(0,0,0,0);
+  const sat=new Date(getSaturdayKey(0));
   return ls<sat;
+}
+
+async function navigateWeek(delta){
+  weekOffset+=delta;
+  state={weekPlan:{},validated:{},weekCustom:{},extraCourses:[],hygiene:[],epicerie:[],condiments:[],boissons:[],frais:[],legumes:[],checkedItems:[],hiddenItems:[]};
+  checkedItems=new Set();hiddenItems=new Set();
+  updateWeekHeader();
+  setSyncStatus('syncing');
+  try{
+    const snap=await getDoc(stateDocForOffset(weekOffset));
+    if(snap.exists())applyRemoteState(snap.data());
+    setSyncStatus('synced');
+  }catch(e){setSyncStatus('error');}
+  listenState();
+  if(shouldSuggest()&&!Object.values(state.weekPlan).some(Boolean))suggestWeek();
+  else renderCurrent();
+}
+
+function updateWeekHeader(){
+  document.getElementById('week-info').textContent=getWeekLabel(weekOffset);
+  const prevLabel=weekOffset===0?'':weekOffset<0?`S${weekOffset}`:'+'+weekOffset;
+  document.getElementById('week-offset-label').textContent=prevLabel;
 }
 
 function suggestWeek(){
@@ -444,9 +482,10 @@ window.suggestWeek=suggestWeek;
 window.validateAll=validateAll;
 window.clearChecked=clearChecked;
 window.syncFromSheet=()=>syncFromSheet(false);
+window.navigateWeek=navigateWeek;
 
 // ── INIT ──────────────────────────────────────────────────────────────
-document.getElementById('week-info').textContent=getWeekLabel();
+updateWeekHeader();
 setSyncStatus('syncing');
 
 // 1. Load recipes (from Firestore cache first, then Sheet)
@@ -458,21 +497,19 @@ async function init(){
     }
   }catch(_){}
 
-  // Load user state from Firestore
+  // Load current week state from Firestore
   try{
-    const snap=await getDoc(STATE_DOC);
+    const snap=await getDoc(stateDocForOffset(0));
     if(snap.exists())applyRemoteState(snap.data());
     setSyncStatus('synced');
   }catch(_){setSyncStatus('error');}
 
-  // Start real-time listener
+  // Start real-time listener for current week
   listenState();
 
-  // Render
   if(shouldSuggest()&&!Object.values(state.weekPlan).some(Boolean))suggestWeek();
   else renderCurrent();
 
-  // Sync recipes from Sheet in background
   syncFromSheet(true);
 }
 
