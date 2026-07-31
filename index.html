@@ -11,8 +11,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
 <style>
-:root{--green:#3B6D11;--green-mid:#639922;--green-light:#EAF3DE;--green-border:#C0DD97;--teal:#0F6E56;--teal-light:#E1F5EE;--teal-border:#9FE1CB;--amber-light:#FAEEDA;--amber:#BA7517;--bg:#FAFAF8;--surface:#FFFFFF;--border:rgba(0,0,0,0.1);--border-med:rgba(0,0,0,0.18);--text:#1a1a18;--text-sec:#5F5E5A;--text-hint:#999;--radius:10px;--radius-sm:7px;}
-@media(prefers-color-scheme:dark){:root{--bg:#141412;--surface:#1e1e1c;--border:rgba(255,255,255,0.1);--border-med:rgba(255,255,255,0.18);--text:#F1EFE8;--text-sec:#B4B2A9;--text-hint:#666;--green-light:#1e2e10;--green-border:#3B6D11;--teal-light:#0d2520;--teal-border:#0F6E56;--amber-light:#2a1e08;}}
+:root{--green:#3B6D11;--green-mid:#639922;--green-light:#EAF3DE;--green-border:#C0DD97;--teal:#0F6E56;--teal-light:#E1F5EE;--teal-border:#9FE1CB;--amber-light:#FAEEDA;--amber:#BA7517;--bg:#F2F5EE;--surface:#FFFFFF;--border:rgba(0,0,0,0.1);--border-med:rgba(0,0,0,0.18);--text:#1a1a18;--text-sec:#5F5E5A;--text-hint:#999;--radius:10px;--radius-sm:7px;}
+@media(prefers-color-scheme:dark){:root{--bg:#0F1F16;--surface:#16281D;--border:rgba(255,255,255,0.1);--border-med:rgba(255,255,255,0.18);--text:#F1EFE8;--text-sec:#B4B2A9;--text-hint:#6B7A70;--green-light:#1e2e10;--green-border:#3B6D11;--teal-light:#0d2520;--teal-border:#0F6E56;--amber-light:#2a1e08;}}
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
 body{font-family:'DM Sans',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100dvh;max-width:480px;margin:0 auto;}
 .header{position:sticky;top:0;z-index:10;background:var(--surface);border-bottom:0.5px solid var(--border);padding:.75rem 1rem;display:flex;align-items:center;gap:10px;}
@@ -135,7 +135,14 @@ const SHEET_TAB = 'Recettes - Meal Planner v2';
 
 // ── GLOBALS ───────────────────────────────────────────────────────────
 const isSummer=()=>{const m=new Date().getMonth();return m>=4&&m<=8;};
-const DAYS=['Samedi','Dimanche','Lundi','Mardi','Mercredi','Jeudi','Vendredi'];
+// Index = Date.getDay() (0=dimanche...6=samedi), utilisé pour la rotation des jours.
+const DAY_BY_JSIDX=['Dimanche','Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi'];
+let weekStartDay='Samedi'; // réglage utilisateur, synchronisé via Firestore (penates/settings)
+function computeDAYS(){
+  const idx=DAY_BY_JSIDX.indexOf(weekStartDay);
+  return[0,1,2,3,4,5,6].map(i=>DAY_BY_JSIDX[(idx+i)%7]);
+}
+let DAYS=computeDAYS();
 let DB=[],ALL_DISHES=[],SOUPS=[];
 let currentFilter='all',currentTab='semaine';
 let checkedItems=new Set(),hiddenItems=new Set();
@@ -144,24 +151,47 @@ let ignoreNextSnapshot=false;
 let weekOffset=0; // 0 = semaine en cours, -1 = semaine passée, +1 = semaine prochaine
 let currentUnsubscribe=null;
 
+// ── SETTINGS (jour de début de semaine) ────────────────────────────────
+const SETTINGS_DOC=doc(db,'penates','settings');
+async function loadSettings(){
+  try{
+    const snap=await getDoc(SETTINGS_DOC);
+    const d=snap.exists()?snap.data().weekStartDay:null;
+    if(d&&DAY_BY_JSIDX.includes(d))weekStartDay=d;
+  }catch(_){}
+  DAYS=computeDAYS();
+}
+async function setWeekStartDay(day){
+  if(day===weekStartDay)return;
+  weekStartDay=day;DAYS=computeDAYS();
+  try{await setDoc(SETTINGS_DOC,{weekStartDay:day});}catch(e){console.error(e);}
+  updateWeekHeader();renderCurrent();
+}
+
 // ── WEEK KEY (used as Firestore doc ID) ───────────────────────────────
-function getSaturdayKey(offset=0){
+// NB: toISOString() convertit en UTC, ce qui décale la clé d'un jour selon le fuseau
+// (bug déjà présent avant cette refonte, cf. l'ancien getSaturdayKey). On garde ce
+// comportement tel quel ici pour ne pas casser la continuité avec les semaines déjà
+// enregistrées dans Firestore sous l'ancienne clé — à corriger séparément si besoin,
+// avec une migration des docs existants.
+function getWeekStartKey(offset=0){
   const n=new Date(),d=n.getDay();
-  const diffSat=d===6?0:d===0?-1:-(d+1);
-  const sat=new Date(n);
-  sat.setDate(n.getDate()+diffSat+(offset*7));
-  sat.setHours(0,0,0,0);
-  return sat.toISOString().slice(0,10); // e.g. "2025-06-21"
+  const startIdx=DAY_BY_JSIDX.indexOf(weekStartDay);
+  const diff=-((d-startIdx+7)%7);
+  const start=new Date(n);
+  start.setDate(n.getDate()+diff+(offset*7));
+  start.setHours(0,0,0,0);
+  return start.toISOString().slice(0,10); // e.g. "2025-06-21"
 }
 function getWeekLabel(offset=0){
-  const key=getSaturdayKey(offset);
-  const sat=new Date(key);
-  const fri=new Date(sat);fri.setDate(sat.getDate()+6);
+  const key=getWeekStartKey(offset);
+  const start=new Date(key);
+  const end=new Date(start);end.setDate(start.getDate()+6);
   const fmt=dt=>dt.toLocaleDateString('fr-FR',{day:'numeric',month:'short'});
-  return`${fmt(sat)} — ${fmt(fri)}`;
+  return`${fmt(start)} — ${fmt(end)}`;
 }
 function stateDocForOffset(offset){
-  return doc(db,'penates','week_'+getSaturdayKey(offset));
+  return doc(db,'penates','week_'+getWeekStartKey(offset));
 }
 
 // ── SYNC STATUS DOT ───────────────────────────────────────────────────
@@ -170,7 +200,7 @@ function setSyncStatus(s){const d=document.getElementById('sync-dot');if(d){d.cl
 // ── STATE (in memory, synced via Firestore) ───────────────────────────
 let state={
   weekPlan:{},validated:{},weekCustom:{},
-  extraCourses:[],hygiene:[],epicerie:[],condiments:[],boissons:[],frais:[],legumes:[],
+  extraCourses:[],hygiene:[],epicerie:[],boissons:[],frais:[],legumes:[],
   checkedItems:[],hiddenItems:[]
 };
 
@@ -248,9 +278,9 @@ async function syncFromSheet(silent=false){
   }
 }
 function loadDishes(dishes){
-  ALL_DISHES=dishes;
-  DB=dishes.filter(d=>!isSoup(d));
-  const soupsAll=dishes.filter(d=>isSoup(d));
+  ALL_DISHES=[...dishes].sort((a,b)=>a.name.localeCompare(b.name,'fr'));
+  DB=ALL_DISHES.filter(d=>!isSoup(d));
+  const soupsAll=ALL_DISHES.filter(d=>isSoup(d));
   SOUPS=isSummer()?soupsAll.filter(d=>d.name.toLowerCase().includes('froid')||d.name.toLowerCase().includes('gazpacho')):soupsAll.filter(d=>!d.name.toLowerCase().includes('froid')&&!d.name.toLowerCase().includes('gazpacho'));
   if(SOUPS.length===0)SOUPS=soupsAll;
 }
@@ -260,13 +290,13 @@ function shouldSuggest(){
   if(weekOffset!==0)return false;
   if(!state.lastSuggest)return true;
   const ls=new Date(state.lastSuggest);ls.setHours(0,0,0,0);
-  const sat=new Date(getSaturdayKey(0));
-  return ls<sat;
+  const start=new Date(getWeekStartKey(0));
+  return ls<start;
 }
 
 async function navigateWeek(delta){
   weekOffset+=delta;
-  state={weekPlan:{},validated:{},weekCustom:{},extraCourses:[],hygiene:[],epicerie:[],condiments:[],boissons:[],frais:[],legumes:[],checkedItems:[],hiddenItems:[]};
+  state={weekPlan:{},validated:{},weekCustom:{},extraCourses:[],hygiene:[],epicerie:[],boissons:[],frais:[],legumes:[],checkedItems:[],hiddenItems:[]};
   checkedItems=new Set();hiddenItems=new Set();
   updateWeekHeader();
   setSyncStatus('syncing');
@@ -286,11 +316,26 @@ function updateWeekHeader(){
   document.getElementById('week-offset-label').textContent=prevLabel;
 }
 
+// Samedi et dimanche ont chacun un créneau midi + un créneau soir ;
+// les autres jours n'ont qu'un seul créneau (le soir).
+function buildSlots(){
+  const slots=[];
+  DAYS.forEach(day=>{
+    if(day==='Samedi'||day==='Dimanche'){
+      slots.push({key:day+'_midi',day,label:day+' midi'});
+      slots.push({key:day+'_soir',day,label:day+' soir'});
+    }else{
+      slots.push({key:day,day,label:day});
+    }
+  });
+  return slots;
+}
+
 function suggestWeek(){
   if(!DB.length){toast('Recettes non chargées');return;}
   const usedF=[],usedL=[],avail=[...DB].sort(()=>Math.random()-.5);
-  DAYS.filter(d=>d!=='Dimanche').forEach(day=>{
-    if(state.validated[day])return;
+  buildSlots().filter(s=>s.key!=='Dimanche_soir').forEach(slot=>{
+    if(state.validated[slot.key])return;
     let best=null;
     for(let dish of avail){
       const fOk=(dish.feculents||[]).every(f=>!usedF.slice(-2).includes(f));
@@ -298,15 +343,15 @@ function suggestWeek(){
       if(fOk&&lOk){best=dish;break;}
     }
     if(!best)best=avail[0];
-    state.weekPlan[day]=best?best.name:'';
+    state.weekPlan[slot.key]=best?best.name:'';
     if(best){avail.splice(avail.indexOf(best),1);(best.feculents||[]).forEach(f=>usedF.push(f));(best.legumes||[]).forEach(l=>usedL.push(l));}
   });
-  if(!state.validated['Dimanche']&&SOUPS.length)state.weekPlan['Dimanche']=SOUPS[Math.floor(Math.random()*SOUPS.length)].name;
+  if(!state.validated['Dimanche_soir']&&SOUPS.length)state.weekPlan['Dimanche_soir']=SOUPS[Math.floor(Math.random()*SOUPS.length)].name;
   state.lastSuggest=new Date().toISOString();
   saveState();renderCurrent();toast('Semaine suggérée ✓');
 }
-function validateAll(){DAYS.forEach(d=>{if(state.weekPlan[d])state.validated[d]=true;});saveState();renderCurrent();toast('Tout validé ✓');}
-function toggleValidate(day){state.validated[day]=!state.validated[day];saveState();renderCurrent();}
+function validateAll(){buildSlots().forEach(s=>{if(state.weekPlan[s.key])state.validated[s.key]=true;});saveState();renderCurrent();toast('Tout validé ✓');}
+function toggleValidate(key){state.validated[key]=!state.validated[key];saveState();renderCurrent();}
 function showTab(tab){currentTab=tab;['semaine','bdd','courses'].forEach(t=>{document.getElementById('nav-'+t).classList.toggle('active',t===tab);});renderCurrent();}
 function renderCurrent(){if(currentTab==='semaine')renderSemaine();else if(currentTab==='bdd')renderBDD();else renderCourses();}
 
@@ -319,48 +364,76 @@ function renderSemaine(){
   const legend=document.createElement('div');legend.className='legend';
   legend.innerHTML='<span class="legend-item"><span class="dot" style="background:var(--teal-border)"></span> Suggéré</span><span class="legend-item"><span class="dot" style="background:var(--green-border)"></span> Validé</span>';
   main.appendChild(legend);
+  const settingsRow=document.createElement('div');
+  settingsRow.style.cssText='display:flex;align-items:center;gap:8px;margin-bottom:.8rem;font-size:12px;color:var(--text-sec);';
+  const startLbl=document.createElement('span');startLbl.textContent='Semaine commence le';
+  const startSel=document.createElement('select');startSel.className='day-select';startSel.style.width='auto';
+  DAY_BY_JSIDX.forEach(d=>{const o=document.createElement('option');o.value=d;o.textContent=d;if(d===weekStartDay)o.selected=true;startSel.appendChild(o);});
+  startSel.onchange=()=>window.setWeekStartDay(startSel.value);
+  settingsRow.appendChild(startLbl);settingsRow.appendChild(startSel);
+  main.appendChild(settingsRow);
   const card=document.createElement('div');card.className='card';card.style.marginTop='.7rem';
   DAYS.forEach(day=>{
-    const wrapper=document.createElement('div');
-    wrapper.style.cssText='border-bottom:0.5px solid var(--border);padding:.45rem 0;';
-    const row=document.createElement('div');row.className='day-row';
-    const label=document.createElement('span');
-    label.className='day-label'+(day==='Dimanche'?' sun':'');
-    label.innerHTML=day==='Dimanche'?`${day} <span class="soup-tag">soupe</span>`:day;
-    const sel=document.createElement('select');
-    const isCustom=state.weekCustom&&state.weekCustom[day];
-    sel.className='day-select'+(state.validated[day]?' validated':(state.weekPlan[day]||isCustom?' suggested':''));
-    const optE=document.createElement('option');optE.value='';optE.textContent='— choisir —';sel.appendChild(optE);
-    const optC=document.createElement('option');optC.value='__custom__';optC.textContent='✏️ Saisir librement…';sel.appendChild(optC);
-    ALL_DISHES.forEach(dish=>{
-      const opt=document.createElement('option');opt.value=dish.name;opt.textContent=dish.name;
-      if(!isCustom&&state.weekPlan[day]===dish.name)opt.selected=true;
-      sel.appendChild(opt);
-    });
-    if(isCustom)sel.value='__custom__';
-    const freeInp=document.createElement('input');
-    freeInp.type='text';freeInp.placeholder='Nom du plat…';
-    freeInp.style.cssText='display:none;width:100%;margin-top:5px;padding:.38rem .5rem;border-radius:var(--radius-sm);border:0.5px solid var(--teal-border);background:var(--teal-light);color:var(--text);font-family:inherit;font-size:12px;';
-    if(isCustom){freeInp.style.display='block';freeInp.value=state.weekCustom[day]||'';}
-    sel.onchange=()=>{
-      if(sel.value==='__custom__'){freeInp.style.display='block';freeInp.focus();state.weekPlan[day]='';if(!state.weekCustom)state.weekCustom={};state.weekCustom[day]=freeInp.value||'';}
-      else{freeInp.style.display='none';state.weekPlan[day]=sel.value;if(state.weekCustom)delete state.weekCustom[day];}
-      state.validated[day]=false;sel.className='day-select'+(sel.value||freeInp.value?' suggested':'');saveState();
-    };
-    freeInp.oninput=()=>{if(!state.weekCustom)state.weekCustom={};state.weekCustom[day]=freeInp.value;saveState();};
-    const vBtn=document.createElement('button');vBtn.className='validate-btn'+(state.validated[day]?' ok':'');
-    vBtn.innerHTML='<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>';
-    vBtn.onclick=()=>toggleValidate(day);
-    row.appendChild(label);row.appendChild(sel);row.appendChild(vBtn);
-    wrapper.appendChild(row);wrapper.appendChild(freeInp);card.appendChild(wrapper);
+    if(day==='Samedi'||day==='Dimanche'){
+      const groupHdr=document.createElement('div');
+      groupHdr.style.cssText='font-size:12px;font-weight:600;color:var(--text-sec);padding:.5rem 0 .1rem;';
+      groupHdr.textContent=day;
+      card.appendChild(groupHdr);
+      card.appendChild(buildSlotRow({key:day+'_midi',day,label:'Midi'}));
+      card.appendChild(buildSlotRow({key:day+'_soir',day,label:'Soir'}));
+    }else{
+      card.appendChild(buildSlotRow({key:day,day,label:day}));
+    }
   });
   if(card.lastChild)card.lastChild.style.borderBottom='none';
   main.appendChild(card);
+}
+function buildSlotRow(slot){
+  const isSoupSlot=slot.key==='Dimanche_soir';
+  const wrapper=document.createElement('div');
+  wrapper.style.cssText='border-bottom:0.5px solid var(--border);padding:.45rem 0;';
+  const row=document.createElement('div');row.className='day-row';
+  const label=document.createElement('span');
+  label.className='day-label'+(isSoupSlot?' sun':'');
+  label.innerHTML=isSoupSlot?`${slot.label} <span class="soup-tag">soupe</span>`:slot.label;
+  const sel=document.createElement('select');
+  const isCustom=state.weekCustom&&state.weekCustom[slot.key];
+  sel.className='day-select'+(state.validated[slot.key]?' validated':(state.weekPlan[slot.key]||isCustom?' suggested':''));
+  const optE=document.createElement('option');optE.value='';optE.textContent='— choisir —';sel.appendChild(optE);
+  const optC=document.createElement('option');optC.value='__custom__';optC.textContent='✏️ Saisir librement…';sel.appendChild(optC);
+  ALL_DISHES.forEach(dish=>{
+    const opt=document.createElement('option');opt.value=dish.name;opt.textContent=dish.name;
+    if(!isCustom&&state.weekPlan[slot.key]===dish.name)opt.selected=true;
+    sel.appendChild(opt);
+  });
+  if(isCustom)sel.value='__custom__';
+  const freeInp=document.createElement('input');
+  freeInp.type='text';freeInp.placeholder='Nom du plat…';
+  freeInp.style.cssText='display:none;width:100%;margin-top:5px;padding:.38rem .5rem;border-radius:var(--radius-sm);border:0.5px solid var(--teal-border);background:var(--teal-light);color:var(--text);font-family:inherit;font-size:12px;';
+  if(isCustom){freeInp.style.display='block';freeInp.value=state.weekCustom[slot.key]||'';}
+  sel.onchange=()=>{
+    if(sel.value==='__custom__'){freeInp.style.display='block';freeInp.focus();state.weekPlan[slot.key]='';if(!state.weekCustom)state.weekCustom={};state.weekCustom[slot.key]=freeInp.value||'';}
+    else{freeInp.style.display='none';state.weekPlan[slot.key]=sel.value;if(state.weekCustom)delete state.weekCustom[slot.key];}
+    state.validated[slot.key]=false;sel.className='day-select'+(sel.value||freeInp.value?' suggested':'');saveState();
+  };
+  freeInp.oninput=()=>{if(!state.weekCustom)state.weekCustom={};state.weekCustom[slot.key]=freeInp.value;saveState();};
+  const vBtn=document.createElement('button');vBtn.className='validate-btn'+(state.validated[slot.key]?' ok':'');
+  vBtn.innerHTML='<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>';
+  vBtn.onclick=()=>toggleValidate(slot.key);
+  row.appendChild(label);row.appendChild(sel);row.appendChild(vBtn);
+  wrapper.appendChild(row);wrapper.appendChild(freeInp);
+  return wrapper;
 }
 
 // ── BDD ───────────────────────────────────────────────────────────────
 function renderBDD(){
   const main=document.getElementById('main');main.innerHTML='';
+  const editLink=document.createElement('a');
+  editLink.href=`https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit`;
+  editLink.target='_blank';editLink.rel='noopener';
+  editLink.textContent='✏️ Modifier nom / ingrédients sur Google Sheets';
+  editLink.style.cssText='display:block;font-size:12px;color:var(--green);margin-bottom:.7rem;text-decoration:none;';
+  main.appendChild(editLink);
   const search=document.createElement('input');search.className='search-input';search.placeholder='Rechercher un plat...';search.type='search';
   main.appendChild(search);
   const filters=document.createElement('div');filters.className='filter-row';
@@ -385,60 +458,67 @@ function renderDishList(query,filter,container){
     const badge=document.createElement('span');badge.className='cat-badge cat-'+dish.cat;badge.textContent={vege:'Végé',poisson:'Poisson',viande:'Viande'}[dish.cat]||dish.cat;
     const btn=document.createElement('button');btn.className='add-dish-btn';btn.textContent='+ Ajouter';
     btn.onclick=()=>{
-      const free=DAYS.find(d=>!state.weekPlan[d]&&!state.validated[d]),target=free||DAYS[0];
-      state.weekPlan[target]=dish.name;state.validated[target]=false;saveState();toast(`Ajouté ${target.toLowerCase()} ✓`);
+      const slots=buildSlots();
+      const free=slots.find(s=>!state.weekPlan[s.key]&&!state.validated[s.key])||slots[0];
+      state.weekPlan[free.key]=dish.name;state.validated[free.key]=false;saveState();toast(`Ajouté ${free.label.toLowerCase()} ✓`);
     };
     row.appendChild(name);row.appendChild(badge);row.appendChild(btn);container.appendChild(row);
   });
 }
 
-// ── QUANTITY MERGING ──────────────────────────────────────────────────
-const UNITS_RE=/\(?\s*(\d+(?:[.,]\d+)?)\s*(kg|g|cl|ml|l|cs|cc)\s*\)?/i;
-function parseQty(s){const m=s.match(UNITS_RE);if(!m)return null;return{amount:parseFloat(m[1].replace(',','.')),unit:m[2].toLowerCase(),raw:m[0]};}
-function normUnit(u){if(u==='l')return{u:'cl',f:100};if(u==='kg')return{u:'g',f:1000};if(u==='ml')return{u:'cl',f:.1};return{u,f:1};}
+// ── INGREDIENT GROUPING ─────────────────────────────────────────────────
+// On ne cumule plus les quantités : chaque ingrédient est juste compté par
+// nombre de recettes de la semaine qui l'utilisent, ex. "Courgette (3)".
+function stripQty(item){
+  let s=item.trim();
+  s=s.replace(/\s*\([^)]*\)\s*$/,''); // "(250g)", "(2 cc)" en fin de chaîne
+  s=s.replace(/^\d+(?:[.,]\d+)?\s*(kg|g|cl|ml|l|cs|cc)?\s+/i,''); // "2 ", "250g " en début
+  return s.trim();
+}
 function mergeItems(items){
   const groups={};
-  items.forEach(item=>{const q=parseQty(item);let key=item;if(q)key=item.replace(q.raw,'').replace(/\s+/g,' ').trim().replace(/[,.]$/,'').trim();if(!groups[key])groups[key]=[];groups[key].push({item,q});});
-  return Object.entries(groups).map(([key,entries])=>{
-    if(entries.length===1)return entries[0].item;
-    const wq=entries.filter(e=>e.q);if(wq.length<2)return entries[0].item;
-    const norm=wq.map(e=>{const n=normUnit(e.q.unit);return{a:e.q.amount*n.f,u:n.u};});
-    const bu=norm[0].u;if(!norm.every(n=>n.u===bu))return entries[0].item;
-    const total=norm.reduce((s,n)=>s+n.a,0);
-    const du=bu==='cl'&&total>=100?'L':bu==='g'&&total>=1000?'kg':bu;
-    const da=du==='L'?total/100:du==='kg'?total/1000:total;
-    const amt=Number.isInteger(da)?da:Math.round(da*10)/10;
-    return`${key} (${amt}${du})`;
+  items.forEach(raw=>{
+    const label=stripQty(raw);if(!label)return;
+    const key=label.toLowerCase().replace(/s$/,''); // tolère singulier/pluriel
+    if(!groups[key])groups[key]={label,n:0};
+    groups[key].n++;
   });
+  return Object.values(groups).map(g=>g.n>1?`${g.label} (${g.n})`:g.label);
 }
 
 // ── COURSES ───────────────────────────────────────────────────────────
-const CAT_MAP={'Légumes':'Légumes & Fruits','Salade':'Légumes & Fruits','Garnitures':'Légumes & Fruits','Produits frais':'Frais','Légumineuses':'Épicerie','Féculents':'Épicerie','Protéines':'Frais','Épices':'Condiments','Autres':'_split'};
+const CAT_MAP={'Légumes':'Légumes & Fruits','Salade':'Légumes & Fruits','Garnitures':'Légumes & Fruits','Produits frais':'Frais','Légumineuses':'Épicerie','Féculents':'Épicerie','Protéines':'Frais','Épices':'_drop','Autres':'_split'};
 const COND_KW=['huile','vinaigre','sauce','moutarde','pesto','curry','cumin','curcuma','paprika','ras el hanout','gingembre','garam','coriandre moulue','cannelle','harissa','origan','herbes','sel','poivre','muscade','piment','citron','cacahuètes','vin blanc','concentré','levure','wakame','miso','tamari','soja','sésame','fleur de sel'];
-function classifyAutre(item){return COND_KW.some(k=>item.toLowerCase().includes(k))?'Condiments':'Épicerie';}
+function classifyAutre(item){return COND_KW.some(k=>item.toLowerCase().includes(k))?null:'Épicerie';}
 
 function renderCourses(){
   const main=document.getElementById('main');main.innerHTML='';
   const hdr=document.createElement('div');hdr.className='courses-header';
   hdr.innerHTML='<span class="section-title">Liste de courses</span><button class="clear-btn" onclick="window.clearChecked()">Tout réafficher</button>';
   main.appendChild(hdr);
-  const AUTO={Épicerie:[],Condiments:[],Frais:[],'Légumes & Fruits':[]};
-  DAYS.forEach(day=>{
-    const n=state.weekPlan[day];if(!n)return;
+  const AUTO={Épicerie:[],Frais:[],'Légumes & Fruits':[]};
+  buildSlots().forEach(slot=>{
+    const n=state.weekPlan[slot.key];if(!n)return;
     const dish=ALL_DISHES.find(d=>d.name===n);if(!dish)return;
-    dish.ingredients.forEach(g=>{const m=CAT_MAP[g.cat];g.items.forEach(item=>{if(m==='_split')AUTO[classifyAutre(item)].push(item);else if(m&&AUTO[m])AUTO[m].push(item);else AUTO['Épicerie'].push(item);});});
+    dish.ingredients.forEach(g=>{
+      const m=CAT_MAP[g.cat];
+      g.items.forEach(item=>{
+        if(m==='_drop')return;
+        if(m==='_split'){const c=classifyAutre(item);if(c)AUTO[c].push(item);return;}
+        if(m&&AUTO[m])AUTO[m].push(item);else AUTO['Épicerie'].push(item);
+      });
+    });
   });
   (state.extraCourses||[]).forEach(i=>AUTO['Épicerie'].push(i));
   const MERGED={};Object.keys(AUTO).forEach(k=>{MERGED[k]=new Set(mergeItems(AUTO[k]));});
   const SECTIONS=[
     {key:'Hygiène',icon:'🧴',items:new Set(),manualList:'hygiene'},
     {key:'Épicerie',icon:'🥫',items:MERGED['Épicerie'],manualList:'epicerie'},
-    {key:'Condiments',icon:'🫙',items:MERGED['Condiments'],manualList:'condiments'},
     {key:'Boissons',icon:'🥤',items:new Set(),manualList:'boissons'},
     {key:'Frais',icon:'🥛',items:MERGED['Frais'],manualList:'frais'},
     {key:'Légumes & Fruits',icon:'🥦',items:MERGED['Légumes & Fruits'],manualList:'legumes'},
   ];
-  ['hygiene','epicerie','condiments','boissons','frais','legumes'].forEach(k=>{const sec=SECTIONS.find(s=>s.manualList===k);if(sec)(state[k]||[]).forEach(i=>sec.items.add(i));});
+  ['hygiene','epicerie','boissons','frais','legumes'].forEach(k=>{const sec=SECTIONS.find(s=>s.manualList===k);if(sec)(state[k]||[]).forEach(i=>sec.items.add(i));});
   SECTIONS.forEach(sec=>{
     const card=document.createElement('div');card.className='card';card.style.marginBottom='.5rem';
     const t=document.createElement('div');t.style.cssText='font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.08em;color:var(--text-hint);margin-bottom:.5rem;';t.textContent=sec.icon+'  '+sec.key;card.appendChild(t);
@@ -462,7 +542,7 @@ function renderCourses(){
       const lbl=document.createElement('label');lbl.htmlFor=cbId;lbl.textContent=item;if(checkedItems.has(item))lbl.className='done';
       cb.onchange=()=>{if(cb.checked)checkedItems.add(item);else checkedItems.delete(item);lbl.className=cb.checked?'done':'';saveState();};
       const rm=document.createElement('button');rm.className='remove-ing';rm.title="J'ai en stock";rm.textContent='×';
-      rm.onclick=()=>{['hygiene','epicerie','condiments','boissons','frais','legumes','extraCourses'].forEach(k=>{if(Array.isArray(state[k]))state[k]=state[k].filter(x=>x!==item);});hiddenItems.add(item);saveState();renderCourses();toast('Retiré (en stock)');};
+      rm.onclick=()=>{['hygiene','epicerie','boissons','frais','legumes','extraCourses'].forEach(k=>{if(Array.isArray(state[k]))state[k]=state[k].filter(x=>x!==item);});hiddenItems.add(item);saveState();renderCourses();toast('Retiré (en stock)');};
       row.appendChild(cb);row.appendChild(lbl);row.appendChild(rm);card.appendChild(row);
     });
     if(hiddenCount>0){
@@ -484,13 +564,17 @@ window.clearChecked=clearChecked;
 window.syncFromSheet=()=>syncFromSheet(false);
 window.navigateWeek=navigateWeek;
 window.showTab=showTab;
+window.setWeekStartDay=setWeekStartDay;
 
 // ── INIT ──────────────────────────────────────────────────────────────
-updateWeekHeader();
 setSyncStatus('syncing');
 
 // 1. Load recipes (from Firestore cache first, then Sheet)
 async function init(){
+  // Load the week-start-day setting first — everything else (clé de semaine, ordre des jours) en dépend
+  await loadSettings();
+  updateWeekHeader();
+
   try{
     const snap=await getDoc(CACHE_DOC);
     if(snap.exists()&&snap.data().dishes?.length){
