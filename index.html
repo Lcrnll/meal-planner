@@ -129,9 +129,13 @@ const db = getFirestore(fbApp);
 const CACHE_DOC = doc(db, 'penates', 'recipes_cache');
 
 // ── CONFIG SHEETS ─────────────────────────────────────────────────────
-const SHEET_ID  = '1p6WSxp0zAJTWLawgYTvGm9Oy-UVk89fD4rVCYuy6o9s';
+const SHEET_ID  = '1wpZghmjxdKWCYMNF6h5IGmCzFCppJPFFXfZpvbMp3As'; // copie sous compte perso (indépendante du compte pro)
 const API_KEY   = 'AIzaSyBGby5SE8IuO-5X8Em8UoHFrISftEehkTQ';
 const SHEET_TAB = 'Recettes - Meal Planner v2';
+
+// Relais d'écriture (Google Apps Script) pour ajouter une recette depuis l'app.
+const ADD_RECIPE_URL = 'https://script.google.com/macros/s/AKfycbxj9i0ISpEVW7NbH0ek63ubQ6SYgp5s5NUuTAlPeW7JpTPAWHJeQCHyBNCrbZQKAZG3PQ/exec';
+const ADD_RECIPE_SECRET = '74a4c3bf300338774b6e55e9d0db5658'; // doit correspondre au SECRET du script Apps Script
 
 // ── GLOBALS ───────────────────────────────────────────────────────────
 const isSummer=()=>{const m=new Date().getMonth();return m>=4&&m<=8;};
@@ -145,6 +149,8 @@ function computeDAYS(){
 let DAYS=computeDAYS();
 let DB=[],ALL_DISHES=[],SOUPS=[];
 let currentFilter='all',currentTab='semaine';
+let addDishOpen=false,addDishName='',addDishCatOverride=null;
+let addDishRows=[{text:'',cat:'Légumes'},{text:'',cat:'Légumes'},{text:'',cat:'Épices'}];
 let checkedItems=new Set(),hiddenItems=new Set();
 let remoteWriteTimeout=null;
 let ignoreNextSnapshot=false;
@@ -434,6 +440,17 @@ function renderBDD(){
   editLink.textContent='✏️ Modifier nom / ingrédients sur Google Sheets';
   editLink.style.cssText='display:block;font-size:12px;color:var(--green);margin-bottom:.7rem;text-decoration:none;';
   main.appendChild(editLink);
+  const toggleBtn=document.createElement('button');
+  toggleBtn.className='btn'+(addDishOpen?'':' btn-primary');
+  toggleBtn.style.cssText='width:100%;margin-bottom:.75rem;';
+  toggleBtn.textContent=addDishOpen?'✕ Annuler':'+ Ajouter un plat';
+  toggleBtn.onclick=()=>{
+    addDishOpen=!addDishOpen;
+    if(addDishOpen){addDishName='';addDishCatOverride=null;addDishRows=[{text:'',cat:'Légumes'},{text:'',cat:'Légumes'},{text:'',cat:'Épices'}];}
+    renderBDD();
+  };
+  main.appendChild(toggleBtn);
+  if(addDishOpen)main.appendChild(buildAddDishForm());
   const search=document.createElement('input');search.className='search-input';search.placeholder='Rechercher un plat...';search.type='search';
   main.appendChild(search);
   const filters=document.createElement('div');filters.className='filter-row';
@@ -466,6 +483,107 @@ function renderDishList(query,filter,container){
   });
 }
 
+function buildAddDishForm(){
+  const card=document.createElement('div');card.className='card';card.style.marginBottom='.75rem';
+
+  const title=document.createElement('div');
+  title.style.cssText='font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.08em;color:var(--text-hint);margin-bottom:.6rem;';
+  title.textContent='Nouveau plat';
+  card.appendChild(title);
+
+  const nameInp=document.createElement('input');
+  nameInp.type='text';nameInp.placeholder='Nom du plat';nameInp.className='search-input';nameInp.style.marginBottom='.7rem';
+  nameInp.value=addDishName;
+  nameInp.oninput=()=>{addDishName=nameInp.value;};
+  card.appendChild(nameInp);
+
+  const ingLabel=document.createElement('div');
+  ingLabel.style.cssText='font-size:12px;color:var(--text-sec);margin-bottom:.4rem;';
+  ingLabel.textContent='Ingrédients (texte libre + catégorie)';
+  card.appendChild(ingLabel);
+
+  let catSelRef=null;
+  const refreshGuess=()=>{
+    if(addDishCatOverride||!catSelRef)return;
+    catSelRef.value=guessCategorie(addDishRows.map(r=>r.text.trim()).filter(Boolean));
+  };
+
+  addDishRows.forEach((row,i)=>{
+    const r=document.createElement('div');
+    r.style.cssText='display:flex;gap:6px;margin-bottom:6px;align-items:center;';
+    const txt=document.createElement('input');txt.type='text';txt.placeholder='ex: 2 courgettes';txt.value=row.text;
+    txt.style.cssText='flex:1;min-width:0;padding:.5rem .6rem;border-radius:var(--radius-sm);border:0.5px solid var(--border);background:var(--bg);color:var(--text);font-family:inherit;font-size:12px;';
+    txt.oninput=()=>{row.text=txt.value;refreshGuess();};
+    const sel=document.createElement('select');
+    sel.style.cssText='padding:.5rem .3rem;border-radius:var(--radius-sm);border:0.5px solid var(--border);background:var(--bg);color:var(--text);font-family:inherit;font-size:12px;flex-shrink:0;';
+    ING_CATS.forEach(c=>{const o=document.createElement('option');o.value=c;o.textContent=c;if(c===row.cat)o.selected=true;sel.appendChild(o);});
+    sel.onchange=()=>{row.cat=sel.value;};
+    const rm=document.createElement('button');rm.className='remove-ing';rm.textContent='×';rm.title='Retirer';
+    rm.onclick=()=>{addDishRows.splice(i,1);if(addDishRows.length===0)addDishRows.push({text:'',cat:'Légumes'});renderBDD();};
+    r.appendChild(txt);r.appendChild(sel);r.appendChild(rm);
+    card.appendChild(r);
+  });
+
+  const addRowBtn=document.createElement('button');
+  addRowBtn.className='add-dish-btn';addRowBtn.textContent='+ Ingrédient';addRowBtn.style.marginBottom='.8rem';
+  addRowBtn.onclick=()=>{addDishRows.push({text:'',cat:'Légumes'});renderBDD();};
+  card.appendChild(addRowBtn);
+
+  const filledTexts=addDishRows.map(r=>r.text.trim()).filter(Boolean);
+  const guess=addDishCatOverride||guessCategorie(filledTexts);
+  const catLabel=document.createElement('div');
+  catLabel.style.cssText='font-size:12px;color:var(--text-sec);margin-bottom:.4rem;';
+  catLabel.textContent='Catégorie du plat (détectée automatiquement, modifiable)';
+  card.appendChild(catLabel);
+  const catSel=document.createElement('select');catSel.className='day-select';catSel.style.marginBottom='.8rem';
+  [['vege','Végé'],['poisson','Poisson'],['viande','Viande']].forEach(([v,l])=>{
+    const o=document.createElement('option');o.value=v;o.textContent=l;if(v===guess)o.selected=true;catSel.appendChild(o);
+  });
+  catSel.onchange=()=>{addDishCatOverride=catSel.value;};
+  card.appendChild(catSel);
+  catSelRef=catSel;
+
+  const saveBtn=document.createElement('button');
+  saveBtn.className='btn btn-primary';saveBtn.style.cssText='width:100%;';
+  saveBtn.textContent='✓ Enregistrer la recette';
+  saveBtn.onclick=()=>submitNewDish();
+  card.appendChild(saveBtn);
+
+  return card;
+}
+
+async function submitNewDish(){
+  const nom=addDishName.trim();
+  const rows=addDishRows.filter(r=>r.text.trim());
+  if(!nom){toast('Nom du plat manquant');return;}
+  if(rows.length===0){toast('Ajoute au moins un ingrédient');return;}
+  if(!ADD_RECIPE_URL){toast('Ajout non configuré — voir les instructions de déploiement');return;}
+
+  const byCat={};
+  rows.forEach(r=>{const c=r.cat,v=r.text.trim();if(!byCat[c])byCat[c]=[];byCat[c].push(v);});
+  const ingredients=Object.entries(byCat).map(([c,items])=>`${c}:${items.join('|')}`).join(' ; ');
+  const feculents=(byCat['Féculents']||[]).map(stripQty).join('|');
+  const legumes=(byCat['Légumes']||[]).map(stripQty).join('|');
+  const categorie=addDishCatOverride||guessCategorie(rows.map(r=>r.text));
+
+  toast('Enregistrement…');
+  try{
+    const res=await fetch(ADD_RECIPE_URL,{method:'POST',body:JSON.stringify({secret:ADD_RECIPE_SECRET,nom,categorie,feculents,legumes,ingredients})});
+    const data=await res.json().catch(()=>null);
+    if(data&&data.ok===false){toast('Erreur : '+(data.error||'échec'));return;}
+  }catch(e){console.error(e);} // la requête peut avoir réussi côté serveur même si la réponse n'est pas lisible ici (CORS)
+
+  const newDish=parseRow([nom,categorie,feculents,legumes,ingredients]);
+  if(newDish){
+    ALL_DISHES=[...ALL_DISHES,newDish].sort((a,b)=>a.name.localeCompare(b.name,'fr'));
+    DB=ALL_DISHES.filter(d=>!isSoup(d));
+  }
+  addDishOpen=false;addDishName='';addDishRows=[{text:'',cat:'Légumes'},{text:'',cat:'Légumes'},{text:'',cat:'Épices'}];addDishCatOverride=null;
+  toast('Recette ajoutée ✓');
+  renderCurrent();
+  setTimeout(()=>syncFromSheet(true),3000); // laisse le temps au Sheet de propager, puis resynchronise depuis la source de vérité
+}
+
 // ── INGREDIENT GROUPING ─────────────────────────────────────────────────
 // On ne cumule plus les quantités : chaque ingrédient est juste compté par
 // nombre de recettes de la semaine qui l'utilisent, ex. "Courgette (3)".
@@ -490,6 +608,17 @@ function mergeItems(items){
 const CAT_MAP={'Légumes':'Légumes & Fruits','Salade':'Légumes & Fruits','Garnitures':'Légumes & Fruits','Produits frais':'Frais','Légumineuses':'Épicerie','Féculents':'Épicerie','Protéines':'Frais','Épices':'_drop','Autres':'_split'};
 const COND_KW=['huile','vinaigre','sauce','moutarde','pesto','curry','cumin','curcuma','paprika','ras el hanout','gingembre','garam','coriandre moulue','cannelle','harissa','origan','herbes','sel','poivre','muscade','piment','citron','cacahuètes','vin blanc','concentré','levure','wakame','miso','tamari','soja','sésame','fleur de sel'];
 function classifyAutre(item){return COND_KW.some(k=>item.toLowerCase().includes(k))?null:'Épicerie';}
+
+// ── AJOUT D'UN PLAT DEPUIS L'APP ────────────────────────────────────────
+const ING_CATS=['Légumes','Légumineuses','Féculents','Protéines','Produits frais','Épices','Salade','Garnitures','Autres'];
+const MEAT_KW=['poulet','dinde','viande','jambon','boeuf','bœuf','porc','canard','veau','agneau','lardons','chorizo','saucisse','bacon','merguez'];
+const FISH_KW=['poisson','saumon','thon','cabillaud','crevette','moules','truite','colin','merlu','maquereau','sardine','anchois'];
+function guessCategorie(items){
+  const txt=items.join(' ').toLowerCase();
+  if(FISH_KW.some(k=>txt.includes(k)))return'poisson';
+  if(MEAT_KW.some(k=>txt.includes(k)))return'viande';
+  return'vege';
+}
 
 function renderCourses(){
   const main=document.getElementById('main');main.innerHTML='';
