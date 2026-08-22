@@ -620,11 +620,7 @@ function guessCategorie(items){
   return'vege';
 }
 
-function renderCourses(){
-  const main=document.getElementById('main');main.innerHTML='';
-  const hdr=document.createElement('div');hdr.className='courses-header';
-  hdr.innerHTML='<span class="section-title">Liste de courses</span><button class="clear-btn" onclick="window.clearChecked()">Tout réafficher</button>';
-  main.appendChild(hdr);
+function computeCourseSections(){
   const AUTO={Épicerie:[],Frais:[],'Légumes & Fruits':[]};
   buildSlots().forEach(slot=>{
     const n=state.weekPlan[slot.key];if(!n)return;
@@ -648,6 +644,26 @@ function renderCourses(){
     {key:'Légumes & Fruits',icon:'🥦',items:MERGED['Légumes & Fruits'],manualList:'legumes'},
   ];
   ['hygiene','epicerie','boissons','frais','legumes'].forEach(k=>{const sec=SECTIONS.find(s=>s.manualList===k);if(sec)(state[k]||[]).forEach(i=>sec.items.add(i));});
+  return SECTIONS;
+}
+
+function clearAllCourses(){
+  computeCourseSections().forEach(sec=>{
+    sec.items.forEach(item=>{
+      ['hygiene','epicerie','boissons','frais','legumes','extraCourses'].forEach(k=>{if(Array.isArray(state[k]))state[k]=state[k].filter(x=>x!==item);});
+      hiddenItems.add(item);
+    });
+  });
+  checkedItems.clear();
+  saveState();renderCourses();toast('Liste vidée ✓');
+}
+
+function renderCourses(){
+  const main=document.getElementById('main');main.innerHTML='';
+  const hdr=document.createElement('div');hdr.className='courses-header';
+  hdr.innerHTML='<span class="section-title">Liste de courses</span><div style="display:flex;gap:12px;"><button class="clear-btn" onclick="window.clearAllCourses()">Vider la liste</button><button class="clear-btn" onclick="window.clearChecked()">Tout réafficher</button></div>';
+  main.appendChild(hdr);
+  const SECTIONS=computeCourseSections();
   SECTIONS.forEach(sec=>{
     const card=document.createElement('div');card.className='card';card.style.marginBottom='.5rem';
     const t=document.createElement('div');t.style.cssText='font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.08em;color:var(--text-hint);margin-bottom:.5rem;';t.textContent=sec.icon+'  '+sec.key;card.appendChild(t);
@@ -690,6 +706,7 @@ function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t
 window.suggestWeek=suggestWeek;
 window.validateAll=validateAll;
 window.clearChecked=clearChecked;
+window.clearAllCourses=clearAllCourses;
 window.syncFromSheet=()=>syncFromSheet(false);
 window.navigateWeek=navigateWeek;
 window.showTab=showTab;
