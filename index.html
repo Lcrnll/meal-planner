@@ -609,6 +609,15 @@ const CAT_MAP={'Légumes':'Légumes & Fruits','Salade':'Légumes & Fruits','Garn
 const COND_KW=['huile','vinaigre','sauce','moutarde','pesto','curry','cumin','curcuma','paprika','ras el hanout','gingembre','garam','coriandre moulue','cannelle','harissa','origan','herbes','sel','poivre','muscade','piment','citron','cacahuètes','vin blanc','concentré','levure','wakame','miso','tamari','soja','sésame','fleur de sel'];
 function classifyAutre(item){return COND_KW.some(k=>item.toLowerCase().includes(k))?null:'Épicerie';}
 
+// Petit-déjeuner & basiques : présents chaque semaine par défaut. Un "×" les masque
+// pour la semaine en cours (via hiddenItems) sans les supprimer définitivement —
+// ils réapparaissent naturellement la semaine suivante.
+const DEFAULT_ITEMS={
+  frais:['Jambon de dinde','Fromage blanc','Skyr','Fjord','Mozzarella','Feta'],
+  epicerie:['Pain de mie'],
+  legumes:['Bananes'],
+};
+
 // ── AJOUT D'UN PLAT DEPUIS L'APP ────────────────────────────────────────
 const ING_CATS=['Légumes','Légumineuses','Féculents','Protéines','Produits frais','Épices','Salade','Garnitures','Autres'];
 const MEAT_KW=['poulet','dinde','viande','jambon','boeuf','bœuf','porc','canard','veau','agneau','lardons','chorizo','saucisse','bacon','merguez'];
@@ -643,7 +652,11 @@ function computeCourseSections(){
     {key:'Frais',icon:'🥛',items:MERGED['Frais'],manualList:'frais'},
     {key:'Légumes & Fruits',icon:'🥦',items:MERGED['Légumes & Fruits'],manualList:'legumes'},
   ];
-  ['hygiene','epicerie','boissons','frais','legumes'].forEach(k=>{const sec=SECTIONS.find(s=>s.manualList===k);if(sec)(state[k]||[]).forEach(i=>sec.items.add(i));});
+  ['hygiene','epicerie','boissons','frais','legumes'].forEach(k=>{
+    const sec=SECTIONS.find(s=>s.manualList===k);if(!sec)return;
+    (DEFAULT_ITEMS[k]||[]).forEach(i=>sec.items.add(i));
+    (state[k]||[]).forEach(i=>sec.items.add(i));
+  });
   return SECTIONS;
 }
 
