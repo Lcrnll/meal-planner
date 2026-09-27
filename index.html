@@ -35,6 +35,10 @@ body{font-family:'DM Sans',system-ui,sans-serif;background:var(--bg);color:var(-
 .btn:active{opacity:.7;}
 .btn-primary{background:var(--green-light);border-color:var(--green-border);color:var(--green);}
 .day-row{display:grid;grid-template-columns:68px 1fr 36px;align-items:center;gap:7px;padding:.45rem 0;}
+.day-row.has-link{grid-template-columns:68px 1fr 30px 36px;}
+.recipe-link{display:flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:var(--radius-sm);color:var(--teal);border:0.5px solid var(--teal-border);background:transparent;transition:background .15s;}
+.recipe-link:hover,.recipe-link:focus-visible{background:var(--teal-light);}
+.recipe-link svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
 .day-label{font-size:12px;color:var(--text-sec);font-weight:500;}
 .day-label.sun{color:var(--green);}
 .day-select{font-size:12px;padding:.38rem .5rem;border-radius:var(--radius-sm);border:0.5px solid var(--border);background:var(--bg);color:var(--text);font-family:inherit;width:100%;appearance:none;-webkit-appearance:none;cursor:pointer;}
@@ -253,10 +257,12 @@ function parseIngredients(raw){
     return{cat:group.slice(0,idx).trim(),items:group.slice(idx+1).split('|').map(i=>i.trim()).filter(Boolean)};
   }).filter(Boolean);
 }
+// N'accepte que http(s) : évite qu'une cellule du Sheet injecte un lien javascript:.
+function safeUrl(v){const u=(v||'').trim();return/^https?:\/\//i.test(u)?u:'';}
 function parseRow(row){
-  const[nom,cat,feculents,legumes,ingredients]=row;
+  const[nom,cat,feculents,legumes,ingredients,lien]=row;
   if(!nom||nom==='Nom')return null;
-  return{name:nom.trim(),cat:(cat||'vege').trim(),feculents:feculents?feculents.split('|').map(s=>s.trim()).filter(Boolean):[],legumes:legumes?legumes.split('|').map(s=>s.trim()).filter(Boolean):[],ingredients:parseIngredients(ingredients)};
+  return{name:nom.trim(),cat:(cat||'vege').trim(),feculents:feculents?feculents.split('|').map(s=>s.trim()).filter(Boolean):[],legumes:legumes?legumes.split('|').map(s=>s.trim()).filter(Boolean):[],ingredients:parseIngredients(ingredients),link:safeUrl(lien)};
 }
 function isSoup(d){return d.name.toLowerCase().includes('soupe')||d.name.toLowerCase().includes('gazpacho')||d.name.toLowerCase().includes('velouté');}
 
@@ -420,13 +426,21 @@ function buildSlotRow(slot){
   sel.onchange=()=>{
     if(sel.value==='__custom__'){freeInp.style.display='block';freeInp.focus();state.weekPlan[slot.key]='';if(!state.weekCustom)state.weekCustom={};state.weekCustom[slot.key]=freeInp.value||'';}
     else{freeInp.style.display='none';state.weekPlan[slot.key]=sel.value;if(state.weekCustom)delete state.weekCustom[slot.key];}
-    state.validated[slot.key]=false;sel.className='day-select'+(sel.value||freeInp.value?' suggested':'');saveState();
+    state.validated[slot.key]=false;sel.className='day-select'+(sel.value||freeInp.value?' suggested':'');updateLink();saveState();
   };
   freeInp.oninput=()=>{if(!state.weekCustom)state.weekCustom={};state.weekCustom[slot.key]=freeInp.value;saveState();};
+  const link=document.createElement('a');link.className='recipe-link';link.target='_blank';link.rel='noopener noreferrer';
+  link.innerHTML='<svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5v14z"/><path d="M6.5 17A2.5 2.5 0 0 0 4 19.5 2.5 2.5 0 0 0 6.5 22H20v-5"/></svg>';
+  const updateLink=()=>{
+    const dish=sel.value&&sel.value!=='__custom__'?ALL_DISHES.find(d=>d.name===sel.value):null;
+    const url=dish&&dish.link;
+    link.style.display=url?'':'none';row.classList.toggle('has-link',!!url);
+    if(url){link.href=url;link.title=`Recette : ${dish.name}`;link.setAttribute('aria-label',link.title);}
+  };
   const vBtn=document.createElement('button');vBtn.className='validate-btn'+(state.validated[slot.key]?' ok':'');
   vBtn.innerHTML='<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>';
   vBtn.onclick=()=>toggleValidate(slot.key);
-  row.appendChild(label);row.appendChild(sel);row.appendChild(vBtn);
+  row.appendChild(label);row.appendChild(sel);row.appendChild(link);row.appendChild(vBtn);updateLink();
   wrapper.appendChild(row);wrapper.appendChild(freeInp);
   return wrapper;
 }
