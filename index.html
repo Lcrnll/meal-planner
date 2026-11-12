@@ -42,6 +42,10 @@ body{font-family:'DM Sans',system-ui,sans-serif;background:var(--bg);color:var(-
 .day-select.validated{border-color:var(--green-border);background:var(--green-light);}
 .validate-btn{width:30px;height:30px;border-radius:var(--radius-sm);border:0.5px solid var(--border);background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--text-hint);}
 .validate-btn.ok{border-color:var(--green-border);background:var(--green-light);color:var(--green);}
+.recipe-link-line{display:flex;align-items:center;gap:8px;margin:3px 0 0 75px;font-size:11px;}
+.recipe-link-line a,.recipe-link-line button{font-size:11px;font-family:inherit;background:none;border:none;padding:0;cursor:pointer;color:var(--green);text-decoration:none;}
+.recipe-link-line button.muted{color:var(--text-hint);}
+.recipe-link-line input{flex:1;min-width:0;padding:.3rem .45rem;border-radius:var(--radius-sm);border:0.5px solid var(--border-med);background:var(--bg);color:var(--text);font-family:inherit;font-size:12px;}
 .validate-btn svg{width:14px;height:14px;stroke-width:2.5;fill:none;stroke:currentColor;}
 .legend{display:flex;gap:10px;margin-bottom:.8rem;}
 .legend-item{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-hint);}
@@ -174,6 +178,35 @@ async function setWeekStartDay(day){
   updateWeekHeader();renderCurrent();
 }
 
+// ── LIENS DE RECETTES (nom du plat → URL), partagés entre toutes les semaines ──
+const LINKS_DOC=doc(db,'penates','recipe_links');
+let recipeLinks={};
+let linkEditKey=null; // créneau dont le lien est en cours d'édition
+function listenLinks(){
+  onSnapshot(LINKS_DOC,(snap)=>{
+    recipeLinks=(snap.exists()&&snap.data().links)||{};
+    if(currentTab==='semaine'&&linkEditKey===null)renderSemaine();
+  },(e)=>console.error(e));
+}
+function normalizeUrl(raw){
+  let u=(raw||'').trim();if(!u)return'';
+  if(!/^https?:\/\//i.test(u))u='https://'+u;
+  try{const p=new URL(u);return(p.protocol==='http:'||p.protocol==='https:')?p.href:null;}catch(_){return null;}
+}
+function getRecipeLink(name){
+  if(!name)return'';
+  if(recipeLinks[name])return recipeLinks[name];
+  const d=ALL_DISHES.find(x=>x.name===name);
+  return(d&&d.lien)||'';
+}
+async function setRecipeLink(name,url){
+  const next={...recipeLinks};
+  if(url)next[name]=url;else delete next[name];
+  recipeLinks=next;
+  try{await setDoc(LINKS_DOC,{links:next});toast(url?'Lien enregistré ✓':'Lien supprimé');}
+  catch(e){console.error(e);toast('Erreur enregistrement du lien');}
+}
+
 // ── WEEK KEY (used as Firestore doc ID) ───────────────────────────────
 // NB: toISOString() convertit en UTC, ce qui décale la clé d'un jour selon le fuseau
 // (bug déjà présent avant cette refonte, cf. l'ancien getSaturdayKey). On garde ce
@@ -254,9 +287,9 @@ function parseIngredients(raw){
   }).filter(Boolean);
 }
 function parseRow(row){
-  const[nom,cat,feculents,legumes,ingredients]=row;
+  const[nom,cat,feculents,legumes,ingredients,lien]=row;
   if(!nom||nom==='Nom')return null;
-  return{name:nom.trim(),cat:(cat||'vege').trim(),feculents:feculents?feculents.split('|').map(s=>s.trim()).filter(Boolean):[],legumes:legumes?legumes.split('|').map(s=>s.trim()).filter(Boolean):[],ingredients:parseIngredients(ingredients)};
+  return{name:nom.trim(),cat:(cat||'vege').trim(),feculents:feculents?feculents.split('|').map(s=>s.trim()).filter(Boolean):[],legumes:legumes?legumes.split('|').map(s=>s.trim()).filter(Boolean):[],ingredients:parseIngredients(ingredients),lien:(normalizeUrl(lien)||'')};
 }
 function isSoup(d){return d.name.toLowerCase().includes('soupe')||d.name.toLowerCase().includes('gazpacho')||d.name.toLowerCase().includes('velouté');}
 
@@ -421,13 +454,48 @@ function buildSlotRow(slot){
     if(sel.value==='__custom__'){freeInp.style.display='block';freeInp.focus();state.weekPlan[slot.key]='';if(!state.weekCustom)state.weekCustom={};state.weekCustom[slot.key]=freeInp.value||'';}
     else{freeInp.style.display='none';state.weekPlan[slot.key]=sel.value;if(state.weekCustom)delete state.weekCustom[slot.key];}
     state.validated[slot.key]=false;sel.className='day-select'+(sel.value||freeInp.value?' suggested':'');saveState();
+    linkEditKey=null;renderLinkLine();
   };
-  freeInp.oninput=()=>{if(!state.weekCustom)state.weekCustom={};state.weekCustom[slot.key]=freeInp.value;saveState();};
+  freeInp.oninput=()=>{if(!state.weekCustom)state.weekCustom={};state.weekCustom[slot.key]=freeInp.value;saveState();renderLinkLine();};
+  const linkLine=document.createElement('div');linkLine.className='recipe-link-line';
+  const currentName=()=>((state.weekCustom&&state.weekCustom[slot.key]!==undefined)?state.weekCustom[slot.key]:state.weekPlan[slot.key]||'').trim();
+  function renderLinkLine(){
+    linkLine.innerHTML='';
+    const name=currentName();
+    if(!name){linkLine.style.display='none';return;}
+    linkLine.style.display='flex';
+    const url=getRecipeLink(name);
+    if(linkEditKey===slot.key){
+      const inp=document.createElement('input');inp.type='url';inp.inputMode='url';inp.placeholder='https://… (vide = supprimer)';inp.value=recipeLinks[name]||'';
+      const ok=document.createElement('button');ok.textContent='✓';
+      const cancel=document.createElement('button');cancel.className='muted';cancel.textContent='✕';
+      const commit=async()=>{
+        const u=normalizeUrl(inp.value);
+        if(u===null){toast('Lien invalide');return;}
+        linkEditKey=null;await setRecipeLink(name,u);renderSemaine();
+      };
+      ok.onclick=commit;
+      inp.onkeydown=(e)=>{if(e.key==='Enter')commit();else if(e.key==='Escape'){linkEditKey=null;renderLinkLine();}};
+      cancel.onclick=()=>{linkEditKey=null;renderLinkLine();};
+      linkLine.appendChild(inp);linkLine.appendChild(ok);linkLine.appendChild(cancel);
+      setTimeout(()=>inp.focus(),0);
+      return;
+    }
+    if(url){
+      const a=document.createElement('a');a.href=url;a.target='_blank';a.rel='noopener noreferrer';a.textContent='🔗 Voir la recette';
+      linkLine.appendChild(a);
+    }
+    const edit=document.createElement('button');edit.className='muted';
+    edit.textContent=url?'modifier':'+ lien recette';
+    edit.onclick=()=>{linkEditKey=slot.key;renderLinkLine();};
+    linkLine.appendChild(edit);
+  }
+  renderLinkLine();
   const vBtn=document.createElement('button');vBtn.className='validate-btn'+(state.validated[slot.key]?' ok':'');
   vBtn.innerHTML='<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>';
   vBtn.onclick=()=>toggleValidate(slot.key);
   row.appendChild(label);row.appendChild(sel);row.appendChild(vBtn);
-  wrapper.appendChild(row);wrapper.appendChild(freeInp);
+  wrapper.appendChild(row);wrapper.appendChild(freeInp);wrapper.appendChild(linkLine);
   return wrapper;
 }
 
@@ -613,8 +681,8 @@ function classifyAutre(item){return COND_KW.some(k=>item.toLowerCase().includes(
 // pour la semaine en cours (via hiddenItems) sans les supprimer définitivement —
 // ils réapparaissent naturellement la semaine suivante.
 const DEFAULT_ITEMS={
-  frais:['Jambon de dinde','Fromage blanc','Skyr','Fjord','Mozzarella','Feta'],
-  epicerie:['Pain de mie'],
+  frais:['Jambon de dinde','Fromage blanc','Skyr','Fjord','Hipro'],
+  epicerie:['Pain de mie','Chocolat'],
   legumes:['Bananes'],
 };
 
@@ -750,6 +818,7 @@ async function init(){
 
   // Start real-time listener for current week
   listenState();
+  listenLinks();
 
   if(shouldSuggest()&&!Object.values(state.weekPlan).some(Boolean))suggestWeek();
   else renderCurrent();
